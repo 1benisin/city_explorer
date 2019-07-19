@@ -27,7 +27,7 @@ client.on('error', err => console.error(err));
 app.get('/location', getLocation);
 app.get('/weather', getWeather);
 app.get('/events', getEvents);
-// app.get('/yelp', getYelp);
+app.get('/yelp', getYelp);
 app.get('/movies', getMovies);
 // app.get('/trails', getTrails);
 
@@ -68,6 +68,10 @@ function deleteByLocationId(table, city) {
 
 const timeouts = {
   weathers: 15 * 1000,
+  // events: 6 * 1000 * 60 * 60,
+  // yelps: 24 * 1000 * 60 * 60,
+  // movies: 30 * 1000 * 60 * 60 * 24,
+  // trails: 7 * 1000 * 60 * 60 * 24
   events: 15 * 1000,
   yelps: 15 * 1000,
   movies: 15 * 1000,
@@ -210,14 +214,16 @@ function Event(event) {
   this.name = event.name.text;
   this.event_date = new Date(event.start.local).toString().slice(0, 15);
   this.summary = event.summary;
+  this.created_at = Date.now();
 }
 
 Event.tableName = 'events';
 Event.lookup = lookup;
+Event.deleteByLocationId = deleteByLocationId;
 
 Event.prototype.save = function (location_id) {
-  const SQL = `INSERT INTO ${this.tableName} (link, name, event_date, summary, location_id) VALUES ($1, $2, $3, $4, $5);`;
-  const values = [this.link, this.name, this.event_date, this.summary, location_id];
+  const SQL = `INSERT INTO ${this.tableName} (link, name, event_date, summary, created_at, location_id) VALUES ($1, $2, $3, $4, $5, $6);`;
+  const values = [this.link, this.name, this.event_date, this.summary, this.created_at, location_id];
 
   client.query(SQL, values);
 };
@@ -230,7 +236,14 @@ function getEvents(request, response) {
     location: request.query.data.id,
 
     cacheHit: function (result) {
-      response.send(result.rows);
+      let ageOfResults = (Date.now() - result.rows[0].created_at);
+      if (ageOfResults > timeouts.events) {
+        console.log('Stale event data for location: ', request.query.data.search_query);
+        Event.deleteByLocationId(Event.tableName, request.query.data.id);
+        this.cacheMiss();
+      } else {
+        response.send(result.rows);
+      }
     },
 
     cacheMiss: function () {
@@ -266,15 +279,18 @@ function Movie(movieObj) {
   this.image_url = `http://image.tmdb.org/t/p/w185${movieObj.poster_path}`;
   this.popularity = movieObj.popularity;
   this.released_on = movieObj.release_date;
+  this.created_at = Date.now();
 }
 
 
 Movie.tableName = 'movies';
 Movie.lookup = lookup;
+Movie.deleteByLocationId = deleteByLocationId;
+
 
 Movie.prototype.save = function (location_id) {
-  const SQL = `INSERT INTO ${this.tableName} (title, overview, average_votes, total_votes, image_url, popularity, released_on, location_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`;
-  const values = [this.title, this.overview, this.average_votes, this.total_votes, this.image_url, this.popularity, this.released_on, location_id];
+  const SQL = `INSERT INTO ${Movie.tableName} (title, overview, average_votes, total_votes, image_url, popularity, released_on, created_at, location_id) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9);`;
+  const values = [this.title, this.overview, this.average_votes, this.total_votes, this.image_url, this.popularity, this.released_on, this.created_at, location_id];
 
   client.query(SQL, values);
 };
@@ -287,7 +303,14 @@ function getMovies(request, response) {
     location: request.query.data.id,
 
     cacheHit: function (result) {
-      response.send(result.rows);
+      let ageOfResults = (Date.now() - result.rows[0].created_at);
+      if (ageOfResults > timeouts.movies) {
+        console.log('Stale MOVIE data for location: ', request.query.data.search_query);
+        Movie.deleteByLocationId(Movie.tableName, request.query.data.id);
+        this.cacheMiss();
+      } else {
+        response.send(result.rows);
+      }
     },
 
     cacheMiss: function () {
@@ -295,7 +318,6 @@ function getMovies(request, response) {
 
       superagent.get(url)
         .then(result => {
-          // console.log(Object.values(result.body.results[0]));
           const movies = result.body.results.map(movieData => {
             const movie = new Movie(movieData);
             movie.save(request.query.data.id);
@@ -316,11 +338,63 @@ function getMovies(request, response) {
 
 function Yelp(business) {
   this.name = business.name;
-  this.url = business.url;
   this.image_url = business.image_url;
-  this.rating = business.rating;
   this.price = business.price;
+  this.rating = business.rating;
+  this.url = business.url;
+  this.created_at = Date.now();
 }
+
+
+Yelp.tableName = 'yelps';
+Yelp.lookup = lookup;
+Yelp.deleteByLocationId = deleteByLocationId;
+
+Yelp.prototype.save = function (location_id) {
+  const SQL = `INSERT INTO ${Yelp.tableName} (name, image_url, price, rating, url, created_at, location_id) VALUES ($1, $2, $3, $4, $5, $6, $7);`;
+  const values = [this.name, this.image_url, this.price, this.rating, this.url, this.created_at, location_id];
+
+  client.query(SQL, values);
+};
+
+
+function getYelp(request, response) {
+
+  Yelp.lookup({
+    tableName: Yelp.tableName,
+
+    location: request.query.data.id,
+
+    cacheHit: function (result) {
+      let ageOfResults = (Date.now() - result.rows[0].created_at);
+      if (ageOfResults > timeouts.yelps) {
+        console.log('Stale YELP data for location: ', request.query.data.search_query);
+        Yelp.deleteByLocationId(Yelp.tableName, request.query.data.id);
+        this.cacheMiss();
+      } else {
+        response.send(result.rows);
+      }
+    },
+
+    cacheMiss: function () {
+      const url = `https://api.yelp.com/v3/businesses/search?term="restaurants"&latitude=${request.query.data.latitude}&longitude=${request.query.data.longitude}`;
+
+      superagent.get(url)
+        .set('Authorization', `Bearer ${process.env.YELP_API_KEY}`)
+        .then(result => {
+          const yelpBusinesses = result.body.businesses.map(business => {
+            const newYelp = new Yelp(business);
+            newYelp.save(request.query.data.id);
+            return newYelp;
+          });
+
+          response.send(yelpBusinesses);
+        })
+        .catch(error => handleError(error, response));
+    }
+  });
+}
+
 
 // #endregion YELP
 
